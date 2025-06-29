@@ -4,10 +4,13 @@ import CoreLocation
 struct TrackingView: View {
     @StateObject private var tracker = LocationManager()
     @State private var isCompleted = false
+    @State private var capturedPhotos: [UIImage] = []
+    @State private var showingCamera = false
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         ZStack {
+            // Background and path drawing
             GeometryReader { proxy in
                 let rect = proxy.frame(in: .local)
                 let points = tracker.locations.map { Coordinate($0.coordinate) }
@@ -16,7 +19,7 @@ struct TrackingView: View {
             }
             .background(Color.white)
             .onAppear { tracker.requestAuthorization(); tracker.start() }
-            .ignoresSafeArea()
+            .ignoresSafeArea(.all, edges: .top) // Only ignore top safe area
 
             VStack {
                 HStack {
@@ -24,6 +27,20 @@ struct TrackingView: View {
                         .font(.caption)
                         .padding(6)
                     Spacer()
+                    // Photo count indicator
+                    if !capturedPhotos.isEmpty {
+                        HStack(spacing: 4) {
+                            Image(systemName: "camera.fill")
+                                .font(.caption)
+                            Text("\(capturedPhotos.count)")
+                                .font(.caption)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.blue.opacity(0.8))
+                        .foregroundColor(.white)
+                        .clipShape(Capsule())
+                    }
                 }
                 Spacer()
                 HStack {
@@ -35,24 +52,56 @@ struct TrackingView: View {
             }
             .padding()
 
+            // Bottom controls - respect safe area
             VStack {
                 Spacer()
-                Button {
-                    // stop tracking
-                    isCompleted = true
-                } label: {
-                    Text("Done")
-                        .font(.title2)
-                        .padding(.horizontal, 40)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(.black, lineWidth: 2)
+                
+                // Camera button - positioned more prominently
+                HStack {
+                    Button {
+                        showingCamera = true
+                    } label: {
+                        VStack(spacing: 4) {
+                            Image(systemName: "camera.fill")
+                                .font(.title)
+                                .foregroundColor(.white)
+                            Text("Photo")
+                                .font(.caption)
+                                .foregroundColor(.white)
+                        }
+                        .frame(width: 80, height: 80)
+                        .background(Color.red) // Bright red for testing visibility
+                        .clipShape(Circle())
+                        .overlay(
+                            Circle()
+                                .stroke(Color.white, lineWidth: 3)
                         )
-                        .background(Color.white.opacity(0.8))
+                        .shadow(color: .black.opacity(0.3), radius: 4, x: 0, y: 2)
+                    }
+                    .padding(.leading, 30)
+                    
+                    Spacer()
+                    
+                    // Done button
+                    Button {
+                        // stop tracking
+                        isCompleted = true
+                    } label: {
+                        Text("Done")
+                            .font(.title2)
+                            .padding(.horizontal, 40)
+                            .padding(.vertical, 12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(.black, lineWidth: 2)
+                            )
+                            .background(Color.white.opacity(0.9))
+                    }
+                    .padding(.trailing, 30)
                 }
-                .padding(.bottom, 40)
+                .padding(.bottom, 30) // Reduced padding to ensure visibility
             }
+            .ignoresSafeArea(.keyboard) // Only ignore keyboard safe area
         }
         .fullScreenCover(isPresented: $isCompleted) {
             if let result = completeSession() {
@@ -62,12 +111,22 @@ struct TrackingView: View {
                     .onAppear { dismiss() }
             }
         }
+        .sheet(isPresented: $showingCamera) {
+            ImagePicker { image in
+                capturedPhotos.append(image)
+            }
+        }
     }
 
     private func completeSession() -> (Doodle, UIImage)? {
         let summary = tracker.stop()
-        // Create doodle
-        let doodle = Doodle(points: summary.points, distance: summary.distance, duration: summary.duration)
+        
+        // Convert photos to Data for storage
+        let photoData = capturedPhotos.compactMap { $0.jpegData(compressionQuality: 0.8) }
+        
+        // Create doodle with photos
+        var doodle = Doodle(points: summary.points, distance: summary.distance, duration: summary.duration)
+        doodle.photos = photoData
 
         // Render image snapshot
         let renderer = ImageRenderer(content: PathSnapshotView(doodle: doodle))
@@ -84,6 +143,45 @@ private struct PathSnapshotView: View {
             let path = PathRenderer.makePath(from: doodle.points, in: proxy.frame(in: .local))
             path.stroke(Color.black, lineWidth: 4)
                 .background(Color.white)
+        }
+    }
+}
+
+// MARK: - ImagePicker
+struct ImagePicker: UIViewControllerRepresentable {
+    let onImagePicked: (UIImage) -> Void
+    @Environment(\.dismiss) private var dismiss
+    
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.delegate = context.coordinator
+        picker.sourceType = .camera
+        picker.allowsEditing = false
+        return picker
+    }
+    
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+    
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+    
+    class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: ImagePicker
+        
+        init(_ parent: ImagePicker) {
+            self.parent = parent
+        }
+        
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.onImagePicked(image)
+            }
+            parent.dismiss()
+        }
+        
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
         }
     }
 }
