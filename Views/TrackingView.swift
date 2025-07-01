@@ -121,8 +121,11 @@ struct TrackingView: View {
     private func completeSession() -> (Doodle, UIImage)? {
         let summary = tracker.stop()
         
-        // Convert photos to Data for storage
-        let photoData = capturedPhotos.compactMap { $0.jpegData(compressionQuality: 0.8) }
+        // Convert photos to Data for storage with optimized compression
+        let photoData = capturedPhotos.compactMap { photo in
+            let resizedPhoto = resizePhotoForStorage(photo)
+            return resizedPhoto.jpegData(compressionQuality: 0.65)
+        }
         
         // Create doodle with photos
         var doodle = Doodle(points: summary.points, distance: summary.distance, duration: summary.duration)
@@ -133,6 +136,26 @@ struct TrackingView: View {
         renderer.scale = 3
         guard let uiImage = renderer.uiImage else { return nil }
         return (doodle, uiImage)
+    }
+    
+    /// Resize photo for storage to reduce memory usage while maintaining quality
+    private func resizePhotoForStorage(_ image: UIImage) -> UIImage {
+        let maxDimension: CGFloat = 1600
+        let size = image.size
+        
+        // If image is already smaller than limit, return as-is
+        if max(size.width, size.height) <= maxDimension {
+            return image
+        }
+        
+        // Calculate new size maintaining aspect ratio
+        let scale = maxDimension / max(size.width, size.height)
+        let newSize = CGSize(width: size.width * scale, height: size.height * scale)
+        
+        // Resize the image
+        return UIGraphicsImageRenderer(size: newSize).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: newSize))
+        }
     }
 }
 
