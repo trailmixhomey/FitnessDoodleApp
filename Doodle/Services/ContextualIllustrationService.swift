@@ -63,92 +63,124 @@ struct ContextualIllustration: Identifiable, Codable, Hashable {
     }
 }
 
-class ContextualIllustrationService: ObservableObject {
-    @Published var illustrations: [ContextualIllustration] = []
-    
-    // Configuration
-    private let detectionRadius: Double = 100 // meters
-    private let minDistanceBetweenIcons: Double = 100 // meters
-    private let maxIconsPerDoodle: Int = 15
-    
-    func detectIllustrationsAlongPath(_ path: [Coordinate]) async {
-        Log.tracking.info("Starting POI detection along path with \(path.count) points")
+/// Finds the real, named places a route passed, so a doodle can show the cafe you actually
+/// walked by rather than generic scenery.
+///
+/// Searching is incremental: each stretch of new ground is searched once and the results kept.
+/// The previous implementation re-searched the whole route from scratch every ten fixes, which
+/// on a normal walk is thousands of redundant requests and is answered with throttling.
+@MainActor
+final class ContextualIllustrationService: ObservableObject {
+    @Published private(set) var illustrations: [ContextualIllustration] = []
 
-        // Sample points along the path to avoid too many API calls
-        let sampledPath = samplePath(path, maxPoints: 20)
+    /// Radius of a single search around one point of the route.
+    private let detectionRadius: CLLocationDistance = 150
+    /// Two icons of the same kind closer than this are the same place seen twice.
+    private let minDistanceBetweenIcons: CLLocationDistance = 100
+    private let maxIconsPerDoodle = 15
+    /// Route distance between search centres. Slightly under `detectionRadius` so consecutive
+    /// searches overlap and no ground between them is missed.
+    private let searchSpacing: CLLocationDistance = 120
+    /// Ceiling on searches per call, so a long recovered route does not issue them in one burst.
+    /// Anything not reached stays unsearched and is picked up by the next call.
+    private let maxSearchesPerPass = 8
 
-        var allIllustrations: [ContextualIllustration] = []
+    /// Centres already searched. This is what makes a growing route cheap: ground covered by an
+    /// earlier pass is never searched again.
+    private var searchedCentres: [Coordinate] = []
+    /// Everything found so far across all passes, before clustering.
+    private var found: [ContextualIllustration] = []
 
-        for (_, coordinate) in sampledPath.enumerated() {
-            let nearbyIllustrations = await searchForPOIs(near: coordinate)
-            allIllustrations.append(contentsOf: nearbyIllustrations)
+    /// Searches any stretch of `path` not already covered, and returns the current icon set.
+    ///
+    /// The return value matters: callers build the saved doodle from it. Publishing to
+    /// `illustrations` alone used to leave `await` returning before the assignment landed, so a
+    /// finished doodle was saved with the *previous* pass's icons — empty, on a first run.
+    @discardableResult
+    func detectIllustrationsAlongPath(_ path: [Coordinate]) async -> [ContextualIllustration] {
+        let centres = uncoveredCentres(along: path).prefix(maxSearchesPerPass)
+        guard !centres.isEmpty else { return illustrations }
+
+        Log.tracking.notice("POI scan: \(centres.count) new centre(s) over \(path.count) route points")
+
+        for centre in centres {
+            found.append(contentsOf: await searchForPOIs(near: centre))
+            searchedCentres.append(centre)
         }
 
-        // Remove duplicates and cluster nearby POIs
-        let clusteredIllustrations = clusterAndFilterIllustrations(allIllustrations)
-
-        // Limit total number of icons
-        let finalIllustrations = Array(clusteredIllustrations.prefix(maxIconsPerDoodle))
-        
-        DispatchQueue.main.async { [weak self] in
-            self?.illustrations = finalIllustrations
-            Log.tracking.info("Found \(finalIllustrations.count) contextual illustrations")
-        }
+        illustrations = Array(clusterAndFilterIllustrations(found).prefix(maxIconsPerDoodle))
+        Log.tracking.notice("POI scan: \(self.illustrations.count) illustration(s) after clustering")
+        return illustrations
     }
-    
-    private func samplePath(_ path: [Coordinate], maxPoints: Int) -> [Coordinate] {
-        guard path.count > maxPoints else { return path }
-        
-        let step = path.count / maxPoints
-        var sampledPath: [Coordinate] = []
-        
-        for i in stride(from: 0, to: path.count, by: step) {
-            sampledPath.append(path[i])
-        }
-        
-        // Always include the last point
-        if let last = path.last, sampledPath.last != last {
-            sampledPath.append(last)
-        }
-        
-        return sampledPath
+
+    /// Clears state so a new session does not inherit the last one's places.
+    func reset() {
+        searchedCentres = []
+        found = []
+        illustrations = []
     }
-    
-    private func searchForPOIs(near coordinate: Coordinate) async -> [ContextualIllustration] {
-        let request = MKLocalSearch.Request()
-        request.region = MKCoordinateRegion(
-            center: CLLocationCoordinate2D(
-                latitude: coordinate.latitude,
-                longitude: coordinate.longitude
-            ),
-            span: MKCoordinateSpan(
-                latitudeDelta: detectionRadius / 111000, // Rough conversion to degrees
-                longitudeDelta: detectionRadius / 111000
-            )
-        )
-        request.resultTypes = .pointOfInterest
-        
-        let search = MKLocalSearch(request: request)
-        
-        do {
-            let response = try await search.start()
 
-            var illustrations: [ContextualIllustration] = []
+    /// Search centres spaced along the route, minus any ground an earlier pass already covered.
+    ///
+    /// The old `samplePath` divided the point count by a maximum and strided by the result, so
+    /// integer division gave a step of 1 for any route of 21-39 points — returning every point
+    /// rather than capping them. Spacing by real distance makes the cost proportional to ground
+    /// covered instead of to fix count.
+    private func uncoveredCentres(along path: [Coordinate]) -> [Coordinate] {
+        guard let first = path.first else { return [] }
 
-            for item in response.mapItems {
-                if let category = item.pointOfInterestCategory,
-                   let illustration = mapPOIToIllustration(item, category: category) {
-                    illustrations.append(illustration)
-                }
+        var centres: [Coordinate] = []
+        var candidates: [Coordinate] = [first]
+        var travelled: CLLocationDistance = 0
+
+        for (previous, current) in zip(path, path.dropFirst()) {
+            travelled += distanceBetween(previous, current)
+            if travelled >= searchSpacing {
+                candidates.append(current)
+                travelled = 0
             }
+        }
+        if let last = path.last, candidates.last.map({ distanceBetween($0, last) > searchSpacing / 2 }) ?? true {
+            candidates.append(last)
+        }
 
-            return illustrations
+        for candidate in candidates {
+            let alreadyCovered = (searchedCentres + centres).contains {
+                distanceBetween($0, candidate) < searchSpacing
+            }
+            if !alreadyCovered { centres.append(candidate) }
+        }
+        return centres
+    }
+
+    private func searchForPOIs(near coordinate: Coordinate) async -> [ContextualIllustration] {
+        // `MKLocalSearch.Request` is a *text* search and fails outright without a
+        // `naturalLanguageQuery`. Every search this service ever made errored on that, which is
+        // why no illustration has ever appeared. `MKLocalPointsOfInterestRequest` is the
+        // region-based API this code always wanted.
+        let request = MKLocalPointsOfInterestRequest(
+            center: coordinate.clLocation,
+            radius: min(detectionRadius, MKLocalPointsOfInterestRequest.maxRadius)
+        )
+
+        do {
+            let response = try await MKLocalSearch(request: request).start()
+            return response.mapItems.compactMap { item in
+                guard let category = item.pointOfInterestCategory else { return nil }
+                return mapPOIToIllustration(item, category: category)
+            }
+        } catch let error as MKError where error.code == .placemarkNotFound {
+            // Genuinely nothing here — a quiet residential street or open ground. MapKit reports
+            // an empty region as an error rather than an empty result, so this must be told apart
+            // from a real failure or the next broken request will hide the same way this one did.
+            Log.tracking.info("No POIs within \(self.detectionRadius)m of search centre")
+            return []
         } catch {
             Log.tracking.error("POI search failed: \(error.localizedDescription)")
             return []
         }
     }
-    
+
     private func mapPOIToIllustration(_ mapItem: MKMapItem, category: MKPointOfInterestCategory) -> ContextualIllustration? {
         let coordinate = Coordinate(
             latitude: mapItem.placemark.coordinate.latitude,

@@ -93,6 +93,7 @@ struct TrackingView: View {
                 guard !tracker.isTracking else { return }
                 // `start` handles the permission prompt itself and begins as soon as it is
                 // answered, so there is nothing to do here but ask.
+                illustrationService.reset()
                 tracker.start(startColorHex: Color.hexString(for: currentColor), resuming: resuming)
                 restoreSegmentsIfNeeded()
             }
@@ -316,15 +317,17 @@ struct TrackingView: View {
             }
         }
         
-        // Perform final POI detection on the complete path
-        await illustrationService.detectIllustrationsAlongPath(combinedPoints)
-        
+        // Final POI pass over the whole route. Take the returned icons rather than reading the
+        // published property: the publish lands on a later main-actor hop, so reading it here
+        // captured the *previous* pass's icons — nothing at all, on a first run.
+        let illustrations = await illustrationService.detectIllustrationsAlongPath(combinedPoints)
+
         let doodle = Doodle(points: combinedPoints,
                             distance: summary.distance,
                             duration: summary.duration,
                             startColorHex: Color.hexString(for: doodleSegments.first?.color ?? .primaryColor),
                             segments: doodleSegments,
-                            illustrations: illustrationService.illustrations)
+                            illustrations: illustrations)
 
         // Render image snapshot
         let snapshot = PathSnapshotView(doodle: doodle)
@@ -351,15 +354,15 @@ struct TrackingView: View {
         let centerPoint = Coordinate(latitude: avgLat, longitude: avgLon)
         
         // Perform POI detection at this location
-        await illustrationService.detectIllustrationsAlongPath([centerPoint])
-        
+        let illustrations = await illustrationService.detectIllustrationsAlongPath([centerPoint])
+
         // Create a single-point doodle (no segments, just one point)
         let doodle = Doodle(points: [centerPoint],
                             distance: summary.distance,
                             duration: summary.duration,
                             startColorHex: Color.hexString(for: currentColor),
                             segments: [], // No segments for single point
-                            illustrations: illustrationService.illustrations)
+                            illustrations: illustrations)
 
         // Render image snapshot for single point
         let snapshot = SinglePointSnapshotView(doodle: doodle)
