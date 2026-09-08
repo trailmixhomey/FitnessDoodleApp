@@ -47,6 +47,23 @@ struct Doodle: Identifiable, Hashable, Codable {
     
     // Contextual illustrations (optional)
     var illustrations: [ContextualIllustration] = []
+
+    /// Decorative scenery placed alongside the route.
+    ///
+    /// Stored optional on purpose. A synthesized decoder throws `keyNotFound` for a missing
+    /// non-optional key even when the property has a default, and `DoodleStore` answers a decode
+    /// failure by setting the whole file aside — so adding a plain `var scenery: [SceneryItem]
+    /// = []` here would have shown every existing user an empty gallery.
+    /// Not `private`: a private stored property makes the synthesized memberwise initializer
+    /// private too, which would put `Doodle(points:...)` out of reach of every other file.
+    /// Being optional, it defaults to nil in that initializer, so existing call sites are
+    /// unaffected. Read and write it through `scenery`.
+    var sceneryItems: [SceneryItem]?
+
+    var scenery: [SceneryItem] {
+        get { sceneryItems ?? [] }
+        set { sceneryItems = newValue }
+    }
     
     // Photo features
     var photos: [Data] = [] // Store UIImage as Data for Codable

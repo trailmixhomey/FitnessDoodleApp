@@ -236,6 +236,32 @@ struct PathRenderer {
         }
     }
 
+    /// Positions scenery against a route, building the frame the same way the path does.
+    static func positionScenery(
+        _ scenery: [SceneryItem],
+        relativeTo points: [Coordinate],
+        in rect: CGRect,
+        fixedViewArea: Double? = nil,
+        centerLocation: Coordinate? = nil,
+        minViewArea: Double? = nil
+    ) -> [PositionedScenery] {
+        guard let frame = frame(for: points, in: rect, minViewArea: minViewArea, fixedViewArea: fixedViewArea, centerLocation: centerLocation) else {
+            return []
+        }
+        return positionScenery(scenery, in: frame)
+    }
+
+    /// Positions scenery through an existing frame, exactly as illustrations are positioned, so
+    /// decoration and real places land in the same drawing rather than in frames of their own.
+    static func positionScenery(_ scenery: [SceneryItem], in frame: Frame) -> [PositionedScenery] {
+        let expandedRect = frame.viewport.rect.insetBy(dx: -50, dy: -50)
+        return scenery.compactMap { item in
+            let position = frame.viewport.point(for: item.coordinate)
+            guard expandedRect.contains(position) else { return nil }
+            return PositionedScenery(item: item, position: position)
+        }
+    }
+
     // MARK: - Douglas-Peucker Path Simplification
 
     /// Simplifies a path, with `tolerance` expressed in metres.
@@ -289,5 +315,12 @@ struct PathRenderer {
 struct PositionedIllustration: Identifiable {
     let id = UUID()
     let illustration: ContextualIllustration
+    let position: CGPoint
+}
+
+/// A piece of scenery with its calculated screen position
+struct PositionedScenery: Identifiable {
+    let id = UUID()
+    let item: SceneryItem
     let position: CGPoint
 }

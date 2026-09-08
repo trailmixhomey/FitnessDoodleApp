@@ -54,6 +54,7 @@
 				DoodleStore.swift,
 				LocationManager.swift,
 				PathRenderer.swift,
+				SceneryService.swift,
 				SessionJournal.swift,
 			);
 			target = 0C28DB3F2E030A49000EF278 /* Doodle */;
@@ -68,6 +69,7 @@
 				DoodleDetailView.swift,
 				HomeView.swift,
 				LoginView.swift,
+				SceneryView.swift,
 				StartDoodlingView.swift,
 				TrackingView.swift,
 			);

@@ -113,6 +113,14 @@ final class ContextualIllustrationService: ObservableObject {
         return illustrations
     }
 
+    /// How many real places were found near `coordinate`, before clustering.
+    ///
+    /// This is the signal that separates a shopping street from a residential one: both carry
+    /// street numbers, so reverse geocoding alone cannot tell them apart.
+    func placeDensity(near coordinate: Coordinate, within radius: CLLocationDistance = 200) -> Int {
+        found.filter { distanceBetween($0.coordinate, coordinate) <= radius }.count
+    }
+
     /// Clears state so a new session does not inherit the last one's places.
     func reset() {
         searchedCentres = []

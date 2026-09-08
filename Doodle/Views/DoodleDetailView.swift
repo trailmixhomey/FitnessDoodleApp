@@ -385,6 +385,14 @@ private struct ShareDoodleView: View {
             
             ZStack {
                 if let frame {
+                    // Scenery first, so the route is drawn over its own decoration.
+                    if !doodle.scenery.isEmpty {
+                        SceneryView(
+                            positionedScenery: PathRenderer.positionScenery(doodle.scenery, in: frame),
+                            itemSize: 22 * shareLineWidthMultiplier
+                        )
+                    }
+
                     if doodle.segments.isEmpty {
                         PathRenderer.makePath(from: doodle.points, in: frame, smoothness: 1.0)
                             .stroke(Color.primaryColor, lineWidth: 8 * shareLineWidthMultiplier) // 24pt
@@ -633,6 +641,18 @@ private struct MapOverlapView: View {
                     }
                 }
                 
+                // Scenery, positioned through the same route-relative frame as the icons.
+                if !doodle.scenery.isEmpty {
+                    SceneryView(
+                        positionedScenery: PathRenderer.positionScenery(
+                            doodle.scenery,
+                            relativeTo: referencePoints,
+                            in: rect
+                        ),
+                        itemSize: 18
+                    )
+                }
+
                 // Contextual illustrations - use map-matched coordinates for positioning
                 if !doodle.illustrations.isEmpty {
                     let positionedIllustrations = PathRenderer.positionIllustrations(

@@ -6,6 +6,7 @@ struct TrackingView: View {
 
     @StateObject private var tracker = LocationManager()
     @StateObject private var illustrationService = ContextualIllustrationService()
+    @StateObject private var sceneryService = SceneryService()
     @State private var isCompleted = false
     @State private var completionResult: (Doodle, UIImage)?
     @State private var isCompletingSession = false
@@ -58,6 +59,14 @@ struct TrackingView: View {
                 let currentLocation = allPoints.last // Use the most recent location as the center
                 // One frame, built once and shared by every segment, icon and marker on screen.
                 if let frame = PathRenderer.frame(for: allPoints, in: rect, fixedViewArea: fixedViewArea, centerLocation: currentLocation) {
+                    // Drawn before the route so the line always sits on top of its own scenery.
+                    if !sceneryService.scenery.isEmpty {
+                        SceneryView(
+                            positionedScenery: PathRenderer.positionScenery(sceneryService.scenery, in: frame),
+                            itemSize: tracker.distance < 100 ? 22 : 18
+                        )
+                    }
+
                     ForEach(segments) { segment in
                         let lineWidth: CGFloat = tracker.distance < 100 ? 16 : 8 // Thicker line for short distances (< 100m)
                         PathRenderer.makePath(from: segment.points, in: frame, smoothness: 1.0)
@@ -94,6 +103,7 @@ struct TrackingView: View {
                 // `start` handles the permission prompt itself and begins as soon as it is
                 // answered, so there is nothing to do here but ask.
                 illustrationService.reset()
+                sceneryService.reset()
                 tracker.start(startColorHex: Color.hexString(for: currentColor), resuming: resuming)
                 restoreSegmentsIfNeeded()
             }
@@ -144,6 +154,11 @@ struct TrackingView: View {
                     lastIllustrationScanCount = allPoints.count
                     Task {
                         await illustrationService.detectIllustrationsAlongPath(allPoints)
+                        // Scenery runs after the places pass so it can ask how many real places
+                        // are nearby, which is what tells a shopping street from a suburb.
+                        await sceneryService.updateScenery(along: allPoints) { coordinate in
+                            illustrationService.placeDensity(near: coordinate)
+                        }
                     }
                 }
             }
@@ -321,13 +336,17 @@ struct TrackingView: View {
         // published property: the publish lands on a later main-actor hop, so reading it here
         // captured the *previous* pass's icons — nothing at all, on a first run.
         let illustrations = await illustrationService.detectIllustrationsAlongPath(combinedPoints)
+        let scenery = await sceneryService.updateScenery(along: combinedPoints) { coordinate in
+            illustrationService.placeDensity(near: coordinate)
+        }
 
-        let doodle = Doodle(points: combinedPoints,
+        var doodle = Doodle(points: combinedPoints,
                             distance: summary.distance,
                             duration: summary.duration,
                             startColorHex: Color.hexString(for: doodleSegments.first?.color ?? .primaryColor),
                             segments: doodleSegments,
                             illustrations: illustrations)
+        doodle.scenery = scenery
 
         // Render image snapshot
         let snapshot = PathSnapshotView(doodle: doodle)
@@ -439,6 +458,14 @@ private struct PathSnapshotView: View {
             let frame = PathRenderer.frame(for: referencePoints, in: rect)
             
             ZStack {
+                // Scenery first, so the route is drawn over its own decoration.
+                if !doodle.scenery.isEmpty, let frame {
+                    SceneryView(
+                        positionedScenery: PathRenderer.positionScenery(doodle.scenery, in: frame),
+                        itemSize: 20
+                    )
+                }
+
                 // Draw the path only if we have multiple points
                 if doodle.points.count > 1, let frame {
                     if doodle.segments.isEmpty {
