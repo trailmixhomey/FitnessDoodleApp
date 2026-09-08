@@ -100,3 +100,5 @@ iOSInjectionProject/
 # Backup files
 *.bak
 *.backup 
+# Claude Code per-machine settings (settings.json is shared, .local.json is not)
+.claude/settings.local.json

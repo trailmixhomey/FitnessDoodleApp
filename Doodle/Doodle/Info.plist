@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>UIAppFonts</key>
+	<array>
+		<string>MessyHandwritten-Regular.ttf</string>
+		<string>MessyHandwritten-Bold.ttf</string>
+	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Fitness Doodle needs your precise location to record your walking paths.</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Fitness Doodle needs location access to continue tracking your path even when the app is in the background or your phone is locked.</string>
+	<key>NSMotionUsageDescription</key>
+	<string>Fitness Doodle uses motion data to detect when you are moving, improving path accuracy and saving battery.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Fitness Doodle needs camera access to let you take photos during your walks that can be overlaid with your doodle route.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>Fitness Doodle needs photo library access to save images for sharing to Instagram Stories.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Fitness Doodle needs photo library access to save images for sharing to Instagram Stories.</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>location</string>
+	</array>
+
+</dict>
+</plist>
