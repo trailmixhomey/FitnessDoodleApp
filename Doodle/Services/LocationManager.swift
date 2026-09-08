@@ -1,6 +1,7 @@
 import Foundation
 import CoreLocation
 import Combine
+import UIKit
 
 /// Turns a stream of filtered positions into the recorded track.
 ///
@@ -224,6 +225,10 @@ final class LocationManager: NSObject, ObservableObject {
         static let maxAccuracy: CLLocationAccuracy = 100
         /// Fixes older than this are stale replays, not the current position.
         static let maxFixAge: TimeInterval = 10
+        /// How long a session runs before the Always upgrade is offered. iOS silently drops a
+        /// request made in the same run loop as the When-In-Use answer, and the upgrade only
+        /// means anything once background updates have actually been running.
+        static let alwaysUpgradeDelay: TimeInterval = 20
     }
 
     /// Every accepted fix, kept so the whole track can be re-smoothed once the session ends.
@@ -246,7 +251,12 @@ final class LocationManager: NSObject, ObservableObject {
 
     /// iOS only offers the Always upgrade once, and only in the right context. Remember that we
     /// have asked so a declined prompt is never put back in front of the user every session.
-    private static let alwaysRequestedKey = "hasRequestedAlwaysLocationAuthorization"
+    ///
+    /// Versioned: installs that ran the old code recorded an ask that iOS never actually raised,
+    /// and would otherwise be locked out of the prompt forever. The new key gives them one.
+    private static let alwaysRequestedKey = "hasRequestedAlwaysLocationAuthorization.v2"
+    private var alwaysUpgradeWork: Task<Void, Never>?
+    private var foregroundObserver: NSObjectProtocol?
 
     override init() {
         super.init()
@@ -274,9 +284,40 @@ final class LocationManager: NSObject, ObservableObject {
             // spends the one prompt and lands on when-in-use anyway.
             manager.requestWhenInUseAuthorization()
         case .authorizedWhenInUse:
-            requestAlwaysUpgradeOnce()
+            scheduleAlwaysUpgrade()
         default:
             break
+        }
+    }
+
+    /// Queues the Always upgrade for a moment iOS will actually act on.
+    ///
+    /// Asking the instant the When-In-Use prompt is answered — which is where this used to be
+    /// called from — is dropped on the floor: iOS will not raise a second authorization prompt
+    /// while it is still settling the first. The old code burned its "asked once" flag on that
+    /// dropped call, so the upgrade was never offered again on any later session either.
+    private func scheduleAlwaysUpgrade() {
+        guard !UserDefaults.standard.bool(forKey: Self.alwaysRequestedKey) else { return }
+
+        alwaysUpgradeWork?.cancel()
+        alwaysUpgradeWork = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Tuning.alwaysUpgradeDelay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.requestAlwaysUpgradeOnce()
+        }
+
+        // If the phone went into a pocket before that timer fired, the attempt was skipped
+        // rather than spent. Take the next return to the foreground instead.
+        guard foregroundObserver == nil else { return }
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isTracking else { return }
+                self.requestAlwaysUpgradeOnce()
+            }
         }
     }
 
@@ -285,8 +326,25 @@ final class LocationManager: NSObject, ObservableObject {
     private func requestAlwaysUpgradeOnce() {
         guard manager.authorizationStatus == .authorizedWhenInUse else { return }
         guard !UserDefaults.standard.bool(forKey: Self.alwaysRequestedKey) else { return }
+        // A prompt raised while the app is backgrounded is never seen. Leave the flag alone and
+        // try again next time the app is on screen rather than spending the one ask on nothing.
+        guard UIApplication.shared.applicationState == .active else {
+            Log.general.info("Deferring Always upgrade request; app is not active")
+            return
+        }
         UserDefaults.standard.set(true, forKey: Self.alwaysRequestedKey)
         manager.requestAlwaysAuthorization()
+        Log.general.info("Requested Always location authorization upgrade")
+    }
+
+    /// Drops the pending upgrade attempt and its foreground observer.
+    private func cancelAlwaysUpgrade() {
+        alwaysUpgradeWork?.cancel()
+        alwaysUpgradeWork = nil
+        if let foregroundObserver {
+            NotificationCenter.default.removeObserver(foregroundObserver)
+            self.foregroundObserver = nil
+        }
     }
 
     /// Keeps location updates coming while the app is backgrounded or the screen is locked.
@@ -372,7 +430,7 @@ final class LocationManager: NSObject, ObservableObject {
         enableBackgroundUpdates()
         updatesStartedAt = Date()
         manager.startUpdatingLocation()
-        requestAlwaysUpgradeOnce()
+        scheduleAlwaysUpgrade()
         Log.general.info("Started fitness tracking")
     }
 
@@ -405,6 +463,7 @@ final class LocationManager: NSObject, ObservableObject {
     func stop() -> Summary {
         manager.stopUpdatingLocation()
         manager.allowsBackgroundLocationUpdates = false
+        cancelAlwaysUpgrade()
         // The journal exists to survive a crash mid-walk. The walk is over, so it has done its
         // job; leaving it would offer this finished session back on the next launch.
         journal.finish()
