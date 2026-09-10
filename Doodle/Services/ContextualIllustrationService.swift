@@ -184,7 +184,7 @@ final class ContextualIllustrationService: ObservableObject {
             Log.tracking.info("No POIs within \(self.detectionRadius)m of search centre")
             return []
         } catch {
-            Log.tracking.error("POI search failed: \(error.localizedDescription)")
+            Log.tracking.error("POI search failed: \(error.localizedDescription, privacy: .public)")
             return []
         }
     }

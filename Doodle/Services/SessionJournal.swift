@@ -36,7 +36,7 @@ final class SessionJournal {
         do {
             try fm.createDirectory(at: base, withIntermediateDirectories: true)
         } catch {
-            Log.general.error("Could not create Application Support directory: \(error.localizedDescription)")
+            Log.general.error("Could not create Application Support directory: \(error.localizedDescription, privacy: .public)")
             return nil
         }
         return base.appendingPathComponent("session-journal.ndjson")
@@ -175,7 +175,7 @@ final class SessionJournal {
         do {
             try handle.write(contentsOf: data)
         } catch {
-            Log.general.error("Failed to append to session journal: \(error.localizedDescription)")
+            Log.general.error("Failed to append to session journal: \(error.localizedDescription, privacy: .public)")
         }
     }
 

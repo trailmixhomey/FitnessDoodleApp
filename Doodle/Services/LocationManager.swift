@@ -141,7 +141,7 @@ private struct TrackBuilder {
         record(to, at: timestamp)
         // We were clearly travelling to have covered this ground.
         isMoving = true
-        Log.location.info("Bridged \(span)m outage with \(steps) points")
+        Log.location.notice("Bridged \(span)m outage with \(steps) points")
     }
 }
 
@@ -262,7 +262,7 @@ final class LocationManager: NSObject, ObservableObject {
         super.init()
         manager.delegate = self
         configureForTracking()
-        Log.general.info("LocationManager initialized")
+        Log.general.notice("LocationManager initialized")
     }
 
     private func configureForTracking() {
@@ -329,12 +329,12 @@ final class LocationManager: NSObject, ObservableObject {
         // A prompt raised while the app is backgrounded is never seen. Leave the flag alone and
         // try again next time the app is on screen rather than spending the one ask on nothing.
         guard UIApplication.shared.applicationState == .active else {
-            Log.general.info("Deferring Always upgrade request; app is not active")
+            Log.general.notice("Deferring Always upgrade request; app is not active")
             return
         }
         UserDefaults.standard.set(true, forKey: Self.alwaysRequestedKey)
         manager.requestAlwaysAuthorization()
-        Log.general.info("Requested Always location authorization upgrade")
+        Log.general.notice("Requested Always location authorization upgrade")
     }
 
     /// Drops the pending upgrade attempt and its foreground observer.
@@ -359,7 +359,7 @@ final class LocationManager: NSObject, ObservableObject {
         case .authorizedAlways, .authorizedWhenInUse:
             manager.allowsBackgroundLocationUpdates = true
             manager.showsBackgroundLocationIndicator = true
-            Log.general.info("Background location updates enabled")
+            Log.general.notice("Background location updates enabled")
         default:
             manager.allowsBackgroundLocationUpdates = false
         }
@@ -386,7 +386,7 @@ final class LocationManager: NSObject, ObservableObject {
         case .authorizedWhenInUse, .authorizedAlways:
             beginTracking()
         case .notDetermined:
-            Log.general.info("Awaiting location authorization before tracking")
+            Log.general.notice("Awaiting location authorization before tracking")
             requestAuthorization()
         case .denied, .restricted:
             Log.general.error("Location authorization refused; cannot track")
@@ -421,7 +421,7 @@ final class LocationManager: NSObject, ObservableObject {
         if let recovered {
             replay(recovered)
             journal.resume()
-            Log.general.info("Resumed session with \(recovered.fixes.count) recovered fixes")
+            Log.general.notice("Resumed session with \(recovered.fixes.count) recovered fixes")
         } else {
             journal.begin(startDate: startTime ?? Date(), startColorHex: startColorHex)
         }
@@ -431,7 +431,7 @@ final class LocationManager: NSObject, ObservableObject {
         updatesStartedAt = Date()
         manager.startUpdatingLocation()
         scheduleAlwaysUpgrade()
-        Log.general.info("Started fitness tracking")
+        Log.general.notice("Started fitness tracking")
     }
 
     /// Rebuilds the in-memory session from journalled fixes, running them through exactly the
@@ -481,7 +481,7 @@ final class LocationManager: NSObject, ObservableObject {
         // Leave the published track showing the finished route rather than the live trace.
         locations = summary.points
         distance = summary.distance
-        Log.general.info("Stopped tracking; \(self.rawFixes.count) fixes smoothed into \(summary.points.count) points, \(summary.distance) m")
+        Log.general.notice("Stopped tracking; \(self.rawFixes.count) fixes smoothed into \(summary.points.count) points, \(summary.distance) m")
         return summary
     }
 
@@ -571,7 +571,7 @@ final class LocationManager: NSObject, ObservableObject {
         if let lastFixTime, fix.timestamp.timeIntervalSince(lastFixTime) > TrackBuilder.Tuning.outage {
             // We have no idea what happened during the silence, so the velocity estimate is
             // worthless. Re-anchor rather than dead-reckoning off a stale heading.
-            Log.location.info("Signal outage of \(fix.timestamp.timeIntervalSince(lastFixTime))s; re-anchoring filter")
+            Log.location.notice("Signal outage of \(fix.timestamp.timeIntervalSince(lastFixTime))s; re-anchoring filter")
             filter.reset(to: fix)
         }
 
@@ -619,7 +619,7 @@ extension LocationManager: CLLocationManagerDelegate {
 
     func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         let status = manager.authorizationStatus
-        Log.general.info("Location authorization changed to: \(status.rawValue)")
+        Log.general.notice("Location authorization changed to: \(status.rawValue)")
 
         switch status {
         case .authorizedAlways, .authorizedWhenInUse:
@@ -644,7 +644,7 @@ extension LocationManager: CLLocationManagerDelegate {
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         guard let clError = error as? CLError else {
-            Log.location.error("Location manager failed: \(error.localizedDescription)")
+            Log.location.error("Location manager failed: \(error.localizedDescription, privacy: .public)")
             return
         }
         switch clError.code {
@@ -657,7 +657,7 @@ extension LocationManager: CLLocationManagerDelegate {
             signalQuality = .searching
             Log.location.warning("Location temporarily unavailable")
         default:
-            Log.location.error("Core Location error: \(clError.localizedDescription)")
+            Log.location.error("Core Location error: \(clError.localizedDescription, privacy: .public)")
         }
     }
 }

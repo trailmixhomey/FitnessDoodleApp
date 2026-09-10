@@ -253,7 +253,7 @@ struct DoodleDetailView: View {
             defer { semaphore.signal() }
             
             guard let snapshot = snapshot, error == nil else {
-                Log.general.error("Map snapshot failed: \(error?.localizedDescription ?? "Unknown error")")
+                Log.general.error("Map snapshot failed: \(error?.localizedDescription ?? "Unknown error", privacy: .public)")
                 return
             }
             

@@ -65,7 +65,7 @@ final class DoodleStore: ObservableObject {
         } catch {
             // The file is there but unreadable. Do not touch it, and do not let a save overwrite
             // whatever it holds.
-            Log.general.error("Could not read saved doodles: \(error.localizedDescription)")
+            Log.general.error("Could not read saved doodles: \(error.localizedDescription, privacy: .public)")
             isReadOnly = true
             return
         }
@@ -73,7 +73,7 @@ final class DoodleStore: ObservableObject {
         do {
             doodles = try JSONDecoder().decode([Doodle].self, from: data)
         } catch {
-            Log.general.error("Failed to decode doodles: \(error.localizedDescription)")
+            Log.general.error("Failed to decode doodles: \(error.localizedDescription, privacy: .public)")
             quarantineUnreadableFile()
         }
     }
@@ -89,10 +89,10 @@ final class DoodleStore: ObservableObject {
             .appendingPathComponent("doodles-unreadable-\(stamp).json")
         do {
             try FileManager.default.moveItem(at: saveURL, to: quarantineURL)
-            Log.general.error("Moved unreadable doodles file aside to \(quarantineURL.lastPathComponent)")
+            Log.general.error("Moved unreadable doodles file aside to \(quarantineURL.lastPathComponent, privacy: .public)")
             doodles = []
         } catch {
-            Log.general.error("Could not set aside unreadable doodles file: \(error.localizedDescription)")
+            Log.general.error("Could not set aside unreadable doodles file: \(error.localizedDescription, privacy: .public)")
             isReadOnly = true
         }
     }
@@ -109,7 +109,7 @@ final class DoodleStore: ObservableObject {
                 let data = try JSONEncoder().encode(snapshot)
                 try data.write(to: url, options: .atomic)
             } catch {
-                Log.general.error("Failed to save doodles: \(error.localizedDescription)")
+                Log.general.error("Failed to save doodles: \(error.localizedDescription, privacy: .public)")
             }
         }
     }

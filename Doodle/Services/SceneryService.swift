@@ -118,7 +118,7 @@ final class SceneryService: ObservableObject {
 
             let klass = await classify(centre, placeDensity: placeDensity(centre))
             classifications.append((centre, klass))
-            Log.tracking.notice("Land class at route sample: \(klass.rawValue)")
+            Log.tracking.notice("Land class at route sample: \(klass.rawValue, privacy: .public)")
         }
     }
 
