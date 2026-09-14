@@ -9,6 +9,10 @@ struct CompleteDoodleView: View {
     @State private var shareImageForSheet: UIImage?
     @State private var currentDoodle: Doodle
     @State private var showingDiscardAlert = false
+    /// The photo being placed on, if the overlay editor is open.
+    @State private var editingPhoto: WalkPhoto?
+    /// Which of the two finished images the big frame is showing.
+    @State private var showsOverlay = false
     
     // Callback to dismiss all the way to home
     var onSaveAndDismissToHome: (() -> Void)?
@@ -22,14 +26,37 @@ struct CompleteDoodleView: View {
     var body: some View {
         VStack(spacing: 20) {
             // Doodle Image
-            Image(uiImage: result.image)
-                .resizable()
-                .scaledToFit()
-                .padding()
-                .background(Color.white)
-                .cornerRadius(12)
-                .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
-            
+            Group {
+                if showsOverlay, let overlayID = currentDoodle.overlayPhotoID {
+                    StoredPhotoView(id: overlayID, thumbnail: false, contentMode: .fit)
+                } else {
+                    Image(uiImage: result.image)
+                        .resizable()
+                        .scaledToFit()
+                }
+            }
+            .padding()
+            .background(Color.white)
+            .cornerRadius(12)
+            .shadow(color: .black.opacity(0.1), radius: 4, x: 0, y: 2)
+
+            // Only worth showing once there are two things to switch between.
+            if currentDoodle.hasPhotoOverlay {
+                Picker("", selection: $showsOverlay) {
+                    Text("Doodle").tag(false)
+                    Text("Photo").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 60)
+            }
+
+            WalkPhotoStrip(
+                photos: currentDoodle.photos,
+                onTap: { editingPhoto = $0 },
+                onAdd: addPhotos,
+                onDelete: removePhoto
+            )
+
             // Stats
             VStack(spacing: 8) {
                 Text(String(format: "%.2f mi", result.doodle.distance/1609.34))
@@ -95,6 +122,9 @@ struct CompleteDoodleView: View {
                 ActivityView(activityItems: [shareImage])
             }
         }
+        .fullScreenCover(item: $editingPhoto) { photo in
+            PhotoOverlayEditorSheet(photoID: photo.id, doodle: currentDoodle, onSave: saveOverlay)
+        }
         .alert("Discard Doodle", isPresented: $showingDiscardAlert) {
             Button("Discard", role: .destructive) {
                 discardDoodle()
@@ -110,6 +140,11 @@ struct CompleteDoodleView: View {
     }
     
     private func discardDoodle() {
+        // The photos were written to disk when the shutter was pressed, long before anyone knew
+        // whether this walk would be kept. Nothing else will ever refer to them now.
+        PhotoStore.shared.delete(
+            ids: currentDoodle.photos.map(\.id) + [currentDoodle.overlayPhotoID].compactMap { $0 }
+        )
         if let onSaveAndDismissToHome = onSaveAndDismissToHome {
             onSaveAndDismissToHome()
         } else {
@@ -128,9 +163,35 @@ struct CompleteDoodleView: View {
     }
     
     private func shareDoodle() {
-        let shareImage = generateBlankDoodleShareImageWithTime()
-        shareImageForSheet = shareImage
+        // Share what the user is looking at. Having deliberately placed a route onto a photo,
+        // being handed the plain doodle instead would be the wrong image every time.
+        if showsOverlay, let overlayID = currentDoodle.overlayPhotoID,
+           let overlay = PhotoStore.shared.image(for: overlayID) {
+            shareImageForSheet = overlay
+        } else {
+            shareImageForSheet = generateBlankDoodleShareImageWithTime()
+        }
         isSharePresented = true
+    }
+
+    private func addPhotos(_ images: [UIImage]) {
+        // Added after the walk, so there is no fix to tie them to: the coordinate stays unknown
+        // rather than being guessed at from the end of the route.
+        currentDoodle.photos.append(contentsOf: images.map { PhotoStore.shared.save($0) })
+    }
+
+    private func removePhoto(_ photo: WalkPhoto) {
+        currentDoodle.photos.removeAll { $0.id == photo.id }
+        PhotoStore.shared.delete(ids: [photo.id])
+    }
+
+    /// Stores a freshly composed overlay and shows it.
+    private func saveOverlay(_ image: UIImage) {
+        if let previous = currentDoodle.overlayPhotoID {
+            PhotoStore.shared.delete(ids: [previous])
+        }
+        currentDoodle.overlayPhotoID = PhotoStore.shared.save(image, takenAt: currentDoodle.date).id
+        showsOverlay = true
     }
     
     private func resizeImageForSharing(_ image: UIImage) -> UIImage {

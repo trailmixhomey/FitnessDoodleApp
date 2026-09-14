@@ -54,6 +54,7 @@
 				DoodleStore.swift,
 				LocationManager.swift,
 				PathRenderer.swift,
+				PhotoStore.swift,
 				SceneryService.swift,
 				SessionJournal.swift,
 			);
@@ -69,6 +70,8 @@
 				DoodleDetailView.swift,
 				HomeView.swift,
 				LoginView.swift,
+				PhotoCapture.swift,
+				PhotoOverlayEditor.swift,
 				SceneryView.swift,
 				StartDoodlingView.swift,
 				TrackingView.swift,

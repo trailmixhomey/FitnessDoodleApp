@@ -35,6 +35,8 @@ struct DoodleDetailView: View {
     @State private var selectedTab = 0
     @State private var currentDoodle: Doodle
     @State private var showingDeleteAlert = false
+    /// The photo being placed on, if the overlay editor is open.
+    @State private var editingPhoto: WalkPhoto?
     
     init(doodle: Doodle) {
         self.doodle = doodle
@@ -53,6 +55,12 @@ struct DoodleDetailView: View {
                     // Map Overlap View (MAP SECOND)
                     MapOverlapView(doodle: doodle)
                         .tag(1)
+
+                    // The route placed on a photo from the walk, once one has been made.
+                    if let overlayID = currentDoodle.overlayPhotoID {
+                        StoredPhotoView(id: overlayID, thumbnail: false, contentMode: .fit)
+                            .tag(2)
+                    }
                 }
                 .tabViewStyle(PageTabViewStyle(indexDisplayMode: .always))
                 .aspectRatio(1, contentMode: .fit)
@@ -64,7 +72,7 @@ struct DoodleDetailView: View {
                         .font(.messyLarge(.caption))
                         .foregroundColor(.primary)
                     Spacer()
-                    Text("\(selectedTab + 1) of 2")
+                    Text("\(selectedTab + 1) of \(pageCount)")
                         .font(.messyLarge(.caption))
                         .foregroundColor(.primary)
                 }
@@ -115,7 +123,14 @@ struct DoodleDetailView: View {
                     }
                 }
                 .padding(.horizontal, 20)
-                
+
+                WalkPhotoStrip(
+                    photos: currentDoodle.photos,
+                    onTap: { editingPhoto = $0 },
+                    onAdd: addPhotos,
+                    onDelete: removePhoto
+                )
+
                 Spacer()
                 
                 // Action buttons
@@ -150,6 +165,9 @@ struct DoodleDetailView: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .background(Color.white)
+            .fullScreenCover(item: $editingPhoto) { photo in
+                PhotoOverlayEditorSheet(photoID: photo.id, doodle: currentDoodle, onSave: saveOverlay)
+            }
             .alert("Delete Doodle", isPresented: $showingDeleteAlert) {
                 Button("Delete", role: .destructive) {
                     deleteDoodle()
@@ -171,12 +189,35 @@ struct DoodleDetailView: View {
         }
     }
     
+    private var pageCount: Int { currentDoodle.hasPhotoOverlay ? 3 : 2 }
+
     private func getViewTitle() -> String {
         switch selectedTab {
         case 0: return "Doodle View"
         case 1: return "Map View"
+        case 2: return "Photo View"
         default: return ""
         }
+    }
+
+    private func addPhotos(_ images: [UIImage]) {
+        currentDoodle.photos.append(contentsOf: images.map { PhotoStore.shared.save($0) })
+        store.update(currentDoodle)
+    }
+
+    private func removePhoto(_ photo: WalkPhoto) {
+        currentDoodle.photos.removeAll { $0.id == photo.id }
+        PhotoStore.shared.delete(ids: [photo.id])
+        store.update(currentDoodle)
+    }
+
+    private func saveOverlay(_ image: UIImage) {
+        if let previous = currentDoodle.overlayPhotoID {
+            PhotoStore.shared.delete(ids: [previous])
+        }
+        currentDoodle.overlayPhotoID = PhotoStore.shared.save(image, takenAt: currentDoodle.date).id
+        store.update(currentDoodle)
+        selectedTab = 2
     }
     
     private func calculateMapRegion(from points: [Coordinate]) -> MKCoordinateRegion {
@@ -232,8 +273,15 @@ struct DoodleDetailView: View {
     private func generateShareImageForCurrentView() -> UIImage {
         // Social media optimized dimensions: 1080x1920 (9:16 aspect ratio)
         let shareSize = CGSize(width: 1080, height: 1920)
-        
-        // ALWAYS share the blank doodle (white background) with time elapsed
+
+        // The route-on-a-photo page shares the composed photo itself: it is already a finished
+        // image, and re-fitting it into a 9:16 frame would only add white bars.
+        if selectedTab == 2, let overlayID = currentDoodle.overlayPhotoID,
+           let overlay = PhotoStore.shared.image(for: overlayID) {
+            return overlay
+        }
+
+        // Otherwise share the blank doodle (white background) with time elapsed
         return generateBlankDoodleShareImageWithTime(size: shareSize)
     }
     

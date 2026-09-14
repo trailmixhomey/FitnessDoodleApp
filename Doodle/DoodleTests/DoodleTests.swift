@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import CoreLocation
+import UIKit
 @testable import Doodle
 
 /// Deterministic pseudo-random Gaussian noise, so these tests never flake.
@@ -511,5 +512,401 @@ struct DoodleStoreTests {
         let store = DoodleStore(directory: temporaryDirectory())
         #expect(store.doodles.isEmpty)
         #expect(store.isReadOnly == false)
+    }
+}
+
+// MARK: - Photos
+
+@MainActor
+struct PhotoStoreTests {
+
+    private func temporaryDirectory() -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func makeStore() -> PhotoStore {
+        PhotoStore(directory: temporaryDirectory(),
+                   defaults: UserDefaults(suiteName: UUID().uuidString)!)
+    }
+
+    /// A solid-colour image of a known size, standing in for a camera capture.
+    ///
+    /// Scale 1 on purpose: a capture from the camera reports its size in pixels, whereas the
+    /// renderer defaults to the screen's scale and would make a "400x300" image 1200x900 pixels
+    /// behind a 400x300 `size` — which is not the thing under test.
+    private func image(width: CGFloat, height: CGFloat, color: UIColor = .red) -> UIImage {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).image { context in
+            color.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+    }
+
+    @Test func aSavedPhotoComesBackFromDisk() {
+        let store = makeStore()
+        let photo = store.save(image(width: 400, height: 300))
+        store.waitForPendingWrites()
+
+        #expect(store.image(for: photo.id) != nil)
+        #expect(store.thumbnail(for: photo.id) != nil)
+    }
+
+    /// Full-resolution captures are several times larger than anything the app draws with them,
+    /// and every copy costs disk, decode time and memory on each view.
+    @Test func aLargeCaptureIsStoredDownscaled() {
+        let store = makeStore()
+        let photo = store.save(image(width: 4032, height: 3024))
+        store.waitForPendingWrites()
+
+        let stored = try! #require(store.image(for: photo.id))
+        #expect(max(stored.size.width, stored.size.height) <= 2048)
+        // Downscaling must not reshape the photo.
+        #expect(abs(stored.size.width / stored.size.height - 4032.0 / 3024.0) < 0.01)
+    }
+
+    @Test func aSmallCaptureIsNotUpscaled() {
+        let store = makeStore()
+        let photo = store.save(image(width: 320, height: 240))
+        store.waitForPendingWrites()
+
+        let stored = try! #require(store.image(for: photo.id))
+        #expect(stored.size == CGSize(width: 320, height: 240))
+    }
+
+    /// A capture carries its rotation in `imageOrientation` rather than in its pixels, so
+    /// anything downstream that works in pixels — the overlay composition, the share renderer —
+    /// draws a sideways photo unless it is baked in on the way to disk.
+    @Test func aRotatedCaptureIsStoredUpright() {
+        let store = makeStore()
+        let landscape = image(width: 400, height: 300)
+        let rotated = UIImage(cgImage: landscape.cgImage!, scale: 1, orientation: .right)
+        // As presented: a right-rotated landscape image reports itself as portrait.
+        #expect(rotated.size == CGSize(width: 300, height: 400))
+
+        let photo = store.save(rotated)
+        store.waitForPendingWrites()
+
+        let stored = try! #require(store.image(for: photo.id))
+        #expect(stored.size == CGSize(width: 300, height: 400))
+        #expect(stored.imageOrientation == .up)
+    }
+
+    @Test func deletingRemovesTheFile() {
+        let store = makeStore()
+        let photo = store.save(image(width: 200, height: 200))
+        store.waitForPendingWrites()
+
+        store.delete(ids: [photo.id])
+        store.waitForPendingWrites()
+
+        #expect(store.image(for: photo.id) == nil)
+        #expect(FileManager.default.fileExists(atPath: store.url(for: photo.id).path) == false)
+    }
+
+    /// Photo files are written when the shutter is pressed, which is before anyone knows whether
+    /// the walk will be kept. Without this, a crash between the shutter and the save leaves files
+    /// behind that no doodle will ever name, for the life of the install.
+    @Test func pruningRemovesOnlyUnreferencedPhotos() {
+        let store = makeStore()
+        let kept = store.save(image(width: 100, height: 100))
+        let overlay = store.save(image(width: 100, height: 100))
+        let inProgress = store.save(image(width: 100, height: 100))
+        let orphan = store.save(image(width: 100, height: 100))
+        store.waitForPendingWrites()
+
+        var doodle = Doodle(points: [], distance: 0, duration: 0)
+        doodle.photos = [kept]
+        doodle.overlayPhotoID = overlay.id
+        store.inProgressPhotos = [inProgress]
+
+        store.prune(keeping: [doodle])
+        store.waitForPendingWrites()
+
+        #expect(store.image(for: kept.id) != nil)
+        #expect(store.image(for: overlay.id) != nil)
+        // A walk still in progress has no doodle yet; pruning it would delete photos out from
+        // under the user mid-walk.
+        #expect(store.image(for: inProgress.id) != nil)
+        #expect(store.image(for: orphan.id) == nil)
+    }
+
+    @Test func inProgressPhotosSurviveARelaunch() {
+        let defaults = UserDefaults(suiteName: UUID().uuidString)!
+        let directory = temporaryDirectory()
+        let store = PhotoStore(directory: directory, defaults: defaults)
+        let photo = store.save(image(width: 100, height: 100))
+        store.inProgressPhotos = [photo]
+
+        let relaunched = PhotoStore(directory: directory, defaults: defaults)
+        #expect(relaunched.inProgressPhotos.map(\.id) == [photo.id])
+
+        relaunched.clearInProgressPhotos()
+        #expect(PhotoStore(directory: directory, defaults: defaults).inProgressPhotos.isEmpty)
+    }
+}
+
+// MARK: - Placing a route on a photo
+
+@MainActor
+struct RouteOverlayTests {
+
+    private func photo(width: CGFloat, height: CGFloat) -> UIImage {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: CGSize(width: width, height: height), format: format).image { context in
+            UIColor.white.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        }
+    }
+
+    private var walk: Doodle {
+        Doodle(points: [
+            Coordinate(latitude: 37.7749, longitude: -122.4194),
+            Coordinate(latitude: 37.7760, longitude: -122.4180),
+            Coordinate(latitude: 37.7770, longitude: -122.4194)
+        ], distance: 400, duration: 300)
+    }
+
+    /// The composed image has to come out at the photo's own resolution. Letting `ImageRenderer`
+    /// take the screen's scale instead would export a 6144px image for a 2048px photo.
+    @Test func composingKeepsThePhotoResolution() {
+        let source = photo(width: 1600, height: 1200)
+        let composed = RouteOverlay.compose(photo: source, doodle: walk, placement: RouteOverlayPlacement())
+
+        #expect(composed.size == source.size)
+        #expect(composed.scale == 1)
+    }
+
+    /// The placement is stored in fractions of the photo rather than in points, so that the route
+    /// the user positioned on a ~350pt preview lands in the same place on the exported image.
+    /// Storing points would have made the exported route a fraction of the size it looked.
+    @Test func theRouteCoversTheSameFractionAtAnySize() {
+        var placement = RouteOverlayPlacement()
+        placement.colorHex = "#FF0000"
+        placement.size = 0.5
+
+        let small = RouteOverlay.compose(photo: photo(width: 400, height: 400), doodle: walk, placement: placement)
+        let large = RouteOverlay.compose(photo: photo(width: 1600, height: 1600), doodle: walk, placement: placement)
+
+        let smallCoverage = redFraction(of: small)
+        let largeCoverage = redFraction(of: large)
+
+        #expect(smallCoverage > 0.001)
+        // Within a point of each other: anti-aliasing and stroke rounding differ slightly at
+        // different resolutions, but the route must occupy the same share of the frame.
+        #expect(abs(smallCoverage - largeCoverage) < 0.01)
+    }
+
+    /// A route dragged to a corner must actually be drawn there in the export.
+    @Test func placementMovesTheRouteInTheExport() {
+        var topLeft = RouteOverlayPlacement()
+        topLeft.colorHex = "#FF0000"
+        topLeft.size = 0.3
+        topLeft.center = CGPoint(x: 0.25, y: 0.25)
+
+        var bottomRight = topLeft
+        bottomRight.center = CGPoint(x: 0.75, y: 0.75)
+
+        let a = RouteOverlay.compose(photo: photo(width: 800, height: 800), doodle: walk, placement: topLeft)
+        let b = RouteOverlay.compose(photo: photo(width: 800, height: 800), doodle: walk, placement: bottomRight)
+
+        let centroidA = try! #require(redCentroid(of: a))
+        let centroidB = try! #require(redCentroid(of: b))
+
+        #expect(centroidA.x < 400 && centroidA.y < 400)
+        #expect(centroidB.x > 400 && centroidB.y > 400)
+    }
+
+    // MARK: Pixel helpers
+
+    private func pixels(of image: UIImage) -> (data: [UInt8], width: Int, height: Int) {
+        let cgImage = image.cgImage!
+        let width = cgImage.width, height = cgImage.height
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        let context = CGContext(data: &data, width: width, height: height,
+                                bitsPerComponent: 8, bytesPerRow: width * 4,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return (data, width, height)
+    }
+
+    private func isRed(_ d: [UInt8], _ i: Int) -> Bool {
+        d[i] > 150 && d[i + 1] < 100 && d[i + 2] < 100
+    }
+
+    private func redFraction(of image: UIImage) -> Double {
+        let (data, width, height) = pixels(of: image)
+        var count = 0
+        for i in stride(from: 0, to: data.count, by: 4) where isRed(data, i) { count += 1 }
+        return Double(count) / Double(width * height)
+    }
+
+    private func redCentroid(of image: UIImage) -> CGPoint? {
+        let (data, width, _) = pixels(of: image)
+        var sumX = 0.0, sumY = 0.0, count = 0.0
+        for i in stride(from: 0, to: data.count, by: 4) where isRed(data, i) {
+            let pixel = i / 4
+            sumX += Double(pixel % width)
+            sumY += Double(pixel / width)
+            count += 1
+        }
+        guard count > 0 else { return nil }
+        return CGPoint(x: sumX / count, y: sumY / count)
+    }
+}
+
+// MARK: - The old inline photo format
+
+@MainActor
+struct PhotoMigrationTests {
+
+    private func temporaryDirectory() -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try? FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    private func makeStore() -> PhotoStore {
+        PhotoStore(directory: temporaryDirectory(),
+                   defaults: UserDefaults(suiteName: UUID().uuidString)!)
+    }
+
+    private var jpegData: Data {
+        UIGraphicsImageRenderer(size: CGSize(width: 120, height: 90)).image { context in
+            UIColor.blue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 120, height: 90))
+        }.jpegData(compressionQuality: 0.9)!
+    }
+
+    /// A doodle exactly as the June 2025 build wrote it, photos and all.
+    private func legacyJSON(photoCount: Int, hasOverlay: Bool) -> Data {
+        let photo = jpegData.base64EncodedString()
+        let photos = Array(repeating: "\"\(photo)\"", count: photoCount).joined(separator: ",")
+        let overlay = hasOverlay ? ",\"savedPhotoOverlay\":\"\(photo)\"" : ""
+        let json = """
+        [{"id":"\(UUID().uuidString)","date":760000000,"points":[],"distance":1000,        "duration":600,"startColorHex":"#006693","segments":[],"illustrations":[],        "photos":[\(photos)]\(overlay)}]
+        """
+        return Data(json.utf8)
+    }
+
+    /// `Doodle` spells its `CodingKeys` out rather than having them synthesized, so that
+    /// `legacyPhotoData` can keep reading the old `photos` key. The cost is that a newly added
+    /// stored property silently stops being saved unless a case is added for it too — which is
+    /// what this round trip is here to catch.
+    @Test func everyFieldOfADoodleSurvivesASaveAndLoad() throws {
+        var doodle = Doodle(
+            points: [Coordinate(latitude: 1, longitude: 2)],
+            distance: 1234,
+            duration: 567,
+            startColorHex: "#123456",
+            segments: [.init(colorHex: "#ABCDEF", points: [Coordinate(latitude: 3, longitude: 4)])],
+            illustrations: [.init(type: .cafe,
+                                  coordinate: Coordinate(latitude: 5, longitude: 6),
+                                  name: "A Cafe",
+                                  iconName: "icon_restaurant")]
+        )
+        doodle.scenery = [SceneryItem(kind: .house,
+                                      coordinate: Coordinate(latitude: 7, longitude: 8),
+                                      flipped: true)]
+        doodle.photos = [WalkPhoto(id: "photo-1",
+                                   takenAt: Date(timeIntervalSince1970: 760_000_000),
+                                   coordinate: Coordinate(latitude: 9, longitude: 10))]
+        doodle.overlayPhotoID = "overlay-1"
+
+        let reloaded = try JSONDecoder().decode(Doodle.self, from: JSONEncoder().encode(doodle))
+
+        #expect(reloaded.id == doodle.id)
+        #expect(reloaded.points == doodle.points)
+        #expect(reloaded.distance == doodle.distance)
+        #expect(reloaded.duration == doodle.duration)
+        #expect(reloaded.startColorHex == doodle.startColorHex)
+        #expect(reloaded.segments == doodle.segments)
+        #expect(reloaded.illustrations.map(\.name) == ["A Cafe"])
+        // Compared field by field rather than with `==`: both `SceneryItem` and
+        // `ContextualIllustration` carry a `UUID` identity that is deliberately not persisted, so
+        // a decoded copy is never equal to the original even when every saved field matches.
+        #expect(reloaded.scenery.map(\.kind) == [.house])
+        #expect(reloaded.scenery.map(\.coordinate) == doodle.scenery.map(\.coordinate))
+        #expect(reloaded.scenery.map(\.flipped) == [true])
+        #expect(reloaded.photos == doodle.photos)
+        #expect(reloaded.overlayPhotoID == "overlay-1")
+    }
+
+    /// The trap this guards: a synthesized decoder throws `keyNotFound` for a missing
+    /// non-optional key, and the store answers a decode failure by setting the whole file aside.
+    /// Getting this wrong shows every existing user an empty gallery.
+    @Test func aDoodleWithNoPhotoKeysStillDecodes() throws {
+        let json = """
+        [{"id":"\(UUID().uuidString)","date":760000000,"points":[],"distance":1000,        "duration":600,"startColorHex":"#006693","segments":[],"illustrations":[]}]
+        """
+        let decoded = try JSONDecoder().decode([Doodle].self, from: Data(json.utf8))
+        #expect(decoded.count == 1)
+        #expect(decoded[0].photos.isEmpty)
+        #expect(decoded[0].hasPhotoOverlay == false)
+    }
+
+    @Test func inlinePhotosMoveIntoTheirOwnFiles() throws {
+        let dir = temporaryDirectory()
+        try legacyJSON(photoCount: 2, hasOverlay: true)
+            .write(to: dir.appendingPathComponent("doodles.json"))
+        let photoStore = makeStore()
+
+        let store = DoodleStore(directory: dir, photoStore: photoStore)
+        photoStore.waitForPendingWrites()
+
+        let doodle = try #require(store.doodles.first)
+        #expect(doodle.photos.count == 2)
+        #expect(doodle.hasPhotoOverlay)
+        for photo in doodle.photos {
+            #expect(photoStore.image(for: photo.id) != nil)
+        }
+        #expect(photoStore.image(for: doodle.overlayPhotoID!) != nil)
+    }
+
+    /// Migration rewrites the file, so the inline bytes must be gone from it afterwards —
+    /// otherwise the whole point (keeping photo data out of the doodle file) is lost, and the
+    /// next launch migrates the same photos again into a second set of files.
+    @Test func migrationHappensOnceAndClearsTheInlineData() throws {
+        let dir = temporaryDirectory()
+        try legacyJSON(photoCount: 1, hasOverlay: false)
+            .write(to: dir.appendingPathComponent("doodles.json"))
+        let photoStore = makeStore()
+
+        let store = DoodleStore(directory: dir, photoStore: photoStore)
+        store.waitForPendingWrites()
+        photoStore.waitForPendingWrites()
+        let firstID = try #require(store.doodles.first?.photos.first?.id)
+
+        let rewritten = try Data(contentsOf: dir.appendingPathComponent("doodles.json"))
+        let reread = try JSONDecoder().decode([Doodle].self, from: rewritten)
+        #expect(reread[0].legacyPhotoData == nil)
+
+        // A second launch finds nothing to migrate and keeps the same file.
+        let relaunched = DoodleStore(directory: dir, photoStore: photoStore)
+        #expect(relaunched.doodles.first?.photos.map(\.id) == [firstID])
+    }
+
+    /// Deleting the doodle is what makes its photos unreachable, so it has to be what frees them.
+    @Test func deletingADoodleDeletesItsPhotos() throws {
+        let dir = temporaryDirectory()
+        let photoStore = makeStore()
+        let store = DoodleStore(directory: dir, photoStore: photoStore)
+
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 100, height: 100)).image { _ in }
+        var doodle = Doodle(points: [], distance: 0, duration: 0)
+        doodle.photos = [photoStore.save(image)]
+        doodle.overlayPhotoID = photoStore.save(image).id
+        photoStore.waitForPendingWrites()
+
+        store.add(doodle)
+        store.delete(doodle)
+        photoStore.waitForPendingWrites()
+
+        #expect(photoStore.image(for: doodle.photos[0].id) == nil)
+        #expect(photoStore.image(for: doodle.overlayPhotoID!) == nil)
     }
 }

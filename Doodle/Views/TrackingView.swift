@@ -18,6 +18,8 @@ struct TrackingView: View {
     @State private var lastZoomScale: Double = 1.0
     @State private var lastIllustrationScanCount = 0
     @State private var hasRestoredSegments = false
+    /// Photos taken during this walk, in the order the shutter was pressed.
+    @State private var capturedPhotos: [WalkPhoto] = []
     
     /// An unfinished session recovered from disk, to be continued rather than started fresh.
     private let resuming: SessionJournal.Recovered?
@@ -104,6 +106,11 @@ struct TrackingView: View {
                 // answered, so there is nothing to do here but ask.
                 illustrationService.reset()
                 sceneryService.reset()
+                // A resumed session keeps the photos it had already taken; a fresh one starts
+                // clean, and anything left behind by a walk that was never saved is pruned at
+                // launch rather than being adopted by the next walk.
+                capturedPhotos = resuming != nil ? PhotoStore.shared.inProgressPhotos : []
+                if resuming == nil { PhotoStore.shared.clearInProgressPhotos() }
                 tracker.start(startColorHex: Color.hexString(for: currentColor), resuming: resuming)
                 restoreSegmentsIfNeeded()
             }
@@ -233,25 +240,34 @@ struct TrackingView: View {
                 }
                 .padding(.bottom, 8)
 
-                // Centered Done button
-                Button {
-                    // stop tracking
-                    guard !isCompletingSession else { return }
-                    isCompletingSession = true
-                    Task {
-                        completionResult = await completeSession()
-                        isCompleted = true
+                // Done stays centred, with the camera beside it, so the button that ends the
+                // walk does not move once a photo has been taken.
+                ZStack {
+                    Button {
+                        // stop tracking
+                        guard !isCompletingSession else { return }
+                        isCompletingSession = true
+                        Task {
+                            completionResult = await completeSession()
+                            isCompleted = true
+                        }
+                    } label: {
+                        Text("Done")
+                            .font(.messyLarge(.title2))
+                            .padding(.horizontal, 40)
+                            .padding(.vertical, 12)
+                            .background(
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(.black, lineWidth: 2)
+                            )
+                            .background(Color.white.opacity(0.8))
                     }
-                } label: {
-                    Text("Done")
-                        .font(.messyLarge(.title2))
-                        .padding(.horizontal, 40)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(.black, lineWidth: 2)
-                        )
-                        .background(Color.white.opacity(0.8))
+
+                    HStack {
+                        Spacer()
+                        photoButton
+                    }
+                    .padding(.trailing, 24)
                 }
                 .padding(.bottom, 20)
             }
@@ -280,6 +296,9 @@ struct TrackingView: View {
         
         let summary = tracker.stop()
         Log.tracking.info("Generating snapshot for doodle with \(summary.points.count) points")
+        // From here the photos travel on the doodle. If it is discarded rather than saved,
+        // `CompleteDoodleView` deletes the files.
+        PhotoStore.shared.clearInProgressPhotos()
 
         // The saved route comes from the smoothing pass over every fix, not from the live
         // trace, so re-cut it into the colour segments the user drew.
@@ -347,6 +366,7 @@ struct TrackingView: View {
                             segments: doodleSegments,
                             illustrations: illustrations)
         doodle.scenery = scenery
+        doodle.photos = capturedPhotos
 
         // Render image snapshot
         let snapshot = PathSnapshotView(doodle: doodle)
@@ -376,12 +396,13 @@ struct TrackingView: View {
         let illustrations = await illustrationService.detectIllustrationsAlongPath([centerPoint])
 
         // Create a single-point doodle (no segments, just one point)
-        let doodle = Doodle(points: [centerPoint],
+        var doodle = Doodle(points: [centerPoint],
                             distance: summary.distance,
                             duration: summary.duration,
                             startColorHex: Color.hexString(for: currentColor),
                             segments: [], // No segments for single point
                             illustrations: illustrations)
+        doodle.photos = capturedPhotos
 
         // Render image snapshot for single point
         let snapshot = SinglePointSnapshotView(doodle: doodle)
@@ -397,6 +418,41 @@ struct TrackingView: View {
         return (doodle, uiImage)
     }
     
+    private var photoButton: some View {
+        AddPhotoButton(maxSelection: 3, identifier: "walkCameraButton", onPicked: addPhotos) {
+            Image(systemName: "camera.fill")
+                .font(.title3)
+                .foregroundStyle(.black)
+                .frame(width: 54, height: 54)
+                .background(Circle().fill(Color.white.opacity(0.85)))
+                .overlay(Circle().stroke(.black, lineWidth: 2))
+                .overlay(alignment: .topTrailing) {
+                    if !capturedPhotos.isEmpty {
+                        Text("\(capturedPhotos.count)")
+                            .font(.messyLarge(.caption2))
+                            .foregroundStyle(.white)
+                            .frame(width: 24, height: 24)
+                            .background(Circle().fill(Color.primaryColor))
+                            .overlay(Circle().stroke(.black, lineWidth: 1.5))
+                            .offset(x: 6, y: -4)
+                    }
+                }
+        }
+    }
+
+    /// Files new photos against the spot on the route where they were taken.
+    private func addPhotos(_ images: [UIImage]) {
+        let coordinate = segments.last(where: { !$0.points.isEmpty })?.points.last
+        for image in images {
+            capturedPhotos.append(PhotoStore.shared.save(image, at: coordinate))
+        }
+        // The pixels are already on disk, but nothing yet says which walk they belong to. Writing
+        // the list out on every capture is what lets a session recovered after a crash or a
+        // force-quit come back with its photos instead of leaving them orphaned.
+        PhotoStore.shared.inProgressPhotos = capturedPhotos
+        Log.tracking.notice("Added \(images.count) photo(s); \(self.capturedPhotos.count) on this walk")
+    }
+
     private var palette: [Color] {
         [.fern, .coral, .cantaloupe, .cerulean, .primaryColor]
     }

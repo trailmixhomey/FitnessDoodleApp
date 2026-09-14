@@ -112,6 +112,7 @@ struct HomeView: View {
                             .font(.system(size: 44))
                             .foregroundColor(.accentColor)
                     }
+                    .accessibilityIdentifier("startDoodleButton")
                     Spacer()
                 }
             }

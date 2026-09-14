@@ -15,15 +15,18 @@ final class DoodleStore: ObservableObject {
 
     private let saveURL: URL
 
-    /// Encoding and writing happen here, off the main actor: the file holds every doodle,
-    /// including photo data, and it is rewritten on every add, update and delete.
+    /// Encoding and writing happen here, off the main actor: the file holds every doodle the
+    /// user has, and it is rewritten in full on every add, update and delete.
     private let ioQueue = DispatchQueue(label: "Trail-Mix.Doodle.DoodleStore")
+
+    private let photoStore: PhotoStore
 
     /// - Parameter directory: where `doodles.json` lives. Defaults to Documents; tests pass a
     ///   temporary directory so they can exercise the recovery paths against real files.
-    init(preloaded: [Doodle] = [], directory: URL? = nil) {
+    init(preloaded: [Doodle] = [], directory: URL? = nil, photoStore: PhotoStore = .shared) {
         let dir = directory ?? FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         saveURL = dir.appendingPathComponent(Self.fileName)
+        self.photoStore = photoStore
         if preloaded.isEmpty {
             load()
         } else {
@@ -52,6 +55,9 @@ final class DoodleStore: ObservableObject {
         if let index = doodles.firstIndex(where: { $0.id == doodle.id }) {
             doodles.remove(at: index)
             save()
+            // The photos are files of their own now, so removing the doodle that named them is
+            // what makes them unreachable rather than what frees them.
+            photoStore.delete(ids: doodle.photos.map(\.id) + [doodle.overlayPhotoID].compactMap { $0 })
         }
     }
 
@@ -75,7 +81,28 @@ final class DoodleStore: ObservableObject {
         } catch {
             Log.general.error("Failed to decode doodles: \(error.localizedDescription, privacy: .public)")
             quarantineUnreadableFile()
+            return
         }
+
+        migrateInlinePhotos()
+        // Photo files are written when the shutter is pressed, which is before anyone knows
+        // whether the walk will be kept. Anything no doodle refers to by now never will be.
+        photoStore.prune(keeping: doodles)
+    }
+
+    /// Moves any photo an earlier build stored inside the doodle into its own file.
+    ///
+    /// Runs once: after the first successful pass nothing has inline data left, so the loop
+    /// finds nothing to do and no write happens.
+    private func migrateInlinePhotos() {
+        var migratedAny = false
+        for (index, doodle) in doodles.enumerated() {
+            if let migrated = photoStore.migrateInlinePhotos(in: doodle) {
+                doodles[index] = migrated
+                migratedAny = true
+            }
+        }
+        if migratedAny { save() }
     }
 
     /// Moves a file we cannot decode out of the way, keeping it under a dated name.
