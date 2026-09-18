@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import CoreLocation
 import UIKit
+import SwiftUI
 @testable import Doodle
 
 /// Deterministic pseudo-random Gaussian noise, so these tests never flake.
@@ -908,5 +909,77 @@ struct PhotoMigrationTests {
 
         #expect(photoStore.image(for: doodle.photos[0].id) == nil)
         #expect(photoStore.image(for: doodle.overlayPhotoID!) == nil)
+    }
+}
+
+// MARK: - What a saved doodle draws
+
+/// Scenery and places are saved as part of a doodle, but the view a saved doodle is *shown*
+/// through has to actually draw them. `BlankDoodleView` drew the route and nothing else for as
+/// long as scenery has existed, so a walk that had trees beside it while it was being recorded
+/// came back bare the moment it was reopened.
+@MainActor
+struct SavedDoodleRenderingTests {
+
+    private var walk: Doodle {
+        Doodle(points: [
+            Coordinate(latitude: 0, longitude: 0),
+            Coordinate(latitude: 0.002, longitude: 0.002)
+        ], distance: 300, duration: 300)
+    }
+
+    /// Coordinates spread along the route, so whatever is placed on them lands inside the frame.
+    private func alongTheRoute(_ count: Int) -> [Coordinate] {
+        (1...count).map { step in
+            let fraction = Double(step) / Double(count + 1)
+            return Coordinate(latitude: 0.002 * fraction, longitude: 0.002 * fraction)
+        }
+    }
+
+    private func render(_ doodle: Doodle) -> UIImage {
+        let renderer = ImageRenderer(content: BlankDoodleView(doodle: doodle).frame(width: 300, height: 300))
+        renderer.scale = 1
+        return renderer.uiImage!
+    }
+
+    /// Pixels that are not the white page: everything the view actually drew.
+    private func inkedPixels(of image: UIImage) -> Int {
+        let cgImage = image.cgImage!
+        let width = cgImage.width, height = cgImage.height
+        var data = [UInt8](repeating: 0, count: width * height * 4)
+        let context = CGContext(data: &data, width: width, height: height,
+                                bitsPerComponent: 8, bytesPerRow: width * 4,
+                                space: CGColorSpaceCreateDeviceRGB(),
+                                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        var count = 0
+        for i in stride(from: 0, to: data.count, by: 4) {
+            let isWhite = data[i] > 245 && data[i + 1] > 245 && data[i + 2] > 245
+            if !isWhite { count += 1 }
+        }
+        return count
+    }
+
+    @Test func aSavedDoodleDrawsItsScenery() {
+        let bare = inkedPixels(of: render(walk))
+
+        var decorated = walk
+        decorated.scenery = alongTheRoute(6).map {
+            SceneryItem(kind: .tree, coordinate: $0, flipped: false)
+        }
+
+        #expect(inkedPixels(of: render(decorated)) > bare)
+    }
+
+    @Test func aSavedDoodleDrawsThePlacesItPassed() {
+        let bare = inkedPixels(of: render(walk))
+
+        var decorated = walk
+        decorated.illustrations = alongTheRoute(3).map {
+            ContextualIllustration(type: .cafe, coordinate: $0, name: "A Cafe", iconName: "icon_restaurant")
+        }
+
+        #expect(inkedPixels(of: render(decorated)) > bare)
     }
 }

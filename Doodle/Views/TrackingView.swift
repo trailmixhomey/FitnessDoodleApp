@@ -368,6 +368,10 @@ struct TrackingView: View {
         doodle.scenery = scenery
         doodle.photos = capturedPhotos
 
+        // Counted at the point it is saved, so a doodle that comes back bare can be told apart
+        // from one that was never given any decoration in the first place.
+        Log.tracking.notice("Saving doodle with \(scenery.count) scenery items and \(illustrations.count) places")
+
         // Render image snapshot
         let snapshot = PathSnapshotView(doodle: doodle)
             .frame(width: 512, height: 512)

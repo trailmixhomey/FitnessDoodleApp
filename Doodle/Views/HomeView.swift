@@ -130,6 +130,16 @@ private struct DoodleThumbnail: View {
             let frame = PathRenderer.frame(for: referencePoints, in: rect)
             
             ZStack {
+                // Scenery first, so the route is drawn over its own decoration. Scaled down to
+                // suit the tile: the places badges are left out here, since a name label is
+                // illegible at this size, but the scenery still reads as texture.
+                if !doodle.scenery.isEmpty, let frame {
+                    SceneryView(
+                        positionedScenery: PathRenderer.positionScenery(doodle.scenery, in: frame),
+                        itemSize: 9
+                    )
+                }
+
                 if doodle.points.count > 1, let frame {
                     // Path doodles
                     if doodle.segments.isEmpty {

@@ -14,7 +14,17 @@ struct BlankDoodleView: View {
             ZStack {
                 // Pure white background
                 Color.white
-                
+
+                // Scenery first, so the route is drawn over its own decoration. Positioned
+                // through the same frame as the path, and at the same size the finished-walk
+                // snapshot uses, so reopening a doodle shows the drawing that was saved.
+                if !doodle.scenery.isEmpty, let frame {
+                    SceneryView(
+                        positionedScenery: PathRenderer.positionScenery(doodle.scenery, in: frame),
+                        itemSize: 20
+                    )
+                }
+
                 // Handle single point vs path doodles
                 if doodle.points.count > 1, let frame {
                     if doodle.segments.isEmpty {
@@ -62,6 +72,14 @@ struct BlankDoodleView: View {
                         .fill(Color.white)
                         .frame(width: 8, height: 8)
                         .position(centerPoint)
+                }
+
+                // The real places found along the walk, through the same frame as the path.
+                if !doodle.illustrations.isEmpty, let frame {
+                    ContextualIllustrationView(
+                        positionedIllustrations: PathRenderer.positionIllustrations(doodle.illustrations, in: frame),
+                        iconSize: 20
+                    )
                 }
             }
         }
